@@ -47,15 +47,14 @@ type icmpEchoHeader struct {
 	seq      uint16
 }
 
-// ICMPPacket represents ICMP packet
-type ICMPPacket struct {
+// icmpPacket represents ICMP packet
+type icmpPacket struct {
 	hdr  icmpEchoHeader
 	data []byte
 }
 
-// MakeICMPReq returns ICMP request packet
-func makeReq(id, seq uint16, data []byte) *ICMPPacket {
-	pkt := ICMPPacket{
+func makeReq(id, seq uint16, data []byte) *icmpPacket {
+	pkt := icmpPacket{
 		hdr: icmpEchoHeader{
 			msgType:  echoRequestMsg,
 			code:     echoRequestCode,
@@ -88,7 +87,8 @@ func htonl(i uint32) uint32 {
 	return *(*uint32)(unsafe.Pointer(&b[0]))
 }
 
-func checksum(pkt *ICMPPacket) uint16 {
+func checksum(pkt *icmpPacket) uint16 {
+	// TODO: use uint32 to store carry
 	var checksum uint16
 	var carry uint16
 	hdrBuf := []uint16{
@@ -99,7 +99,7 @@ func checksum(pkt *ICMPPacket) uint16 {
 	}
 	dataLen := len(pkt.data)
 	if dataLen%2 != 0 {
-		checksum += uint16(pkt.data[dataLen-1]) << 8 // Cant carry here
+		checksum += uint16(pkt.data[dataLen-1]) << 8
 		dataLen--
 	}
 
@@ -119,7 +119,7 @@ func checksum(pkt *ICMPPacket) uint16 {
 	return checksum
 }
 
-func pkt2bytes(pkt *ICMPPacket) []byte {
+func pkt2bytes(pkt *icmpPacket) []byte {
 	data := make([]byte, 0, icmpEchoHeaderSize)
 	data = append(data,
 		pkt.hdr.msgType,
@@ -151,8 +151,8 @@ func getIPHdr(data []byte) *ipHeader {
 	return &hdr
 }
 
-func getICMPPkt(data []byte) *ICMPPacket {
-	pkt := ICMPPacket{
+func getICMPPkt(data []byte) *icmpPacket {
+	pkt := icmpPacket{
 		hdr: icmpEchoHeader{
 			msgType:  data[0],
 			code:     data[1],
@@ -172,23 +172,24 @@ func ip2int(ip net.IP) uint32 {
 	return binary.BigEndian.Uint32(ip)
 }
 
-func cmpPayload(req, res *ICMPPacket) error {
+func cmpPayload(req, res *icmpPacket) error {
 	if !bytes.Equal(req.data, res.data) {
 		return errors.New("Payload do not match")
 	}
 	return nil
 }
 
-func isResponce(res, req *ICMPPacket) bool {
+func isResponce(res, req *icmpPacket) bool {
 	if res.hdr.code == echoResponceCode && res.hdr.msgType == echoResponceMsg && res.hdr.seq == req.hdr.seq && res.hdr.id == req.hdr.id {
 		return true
 	}
 	return false
 }
 
+// Ping measures time between icmp echo request and reply
 func Ping(host string, c int, payload []byte) error {
 	id := uint16(rand.Intn(10000) >> 16)
-	// TODO: узнать, с какого интерфейса отправляется пакет. Сравнить ip назначения принятого пакета с ip интерфейса
+	// TODO: get interface name that sends to <host>
 	conn, errDial := net.Dial("ip4:icmp", host)
 	if errDial != nil {
 		return errDial
@@ -202,7 +203,7 @@ func Ping(host string, c int, payload []byte) error {
 		datalen := len(reqData)
 		readBuf := make([]byte, datalen+ipHeaderSize)
 		var ipHdr *ipHeader
-		var resPkt *ICMPPacket
+		var resPkt *icmpPacket
 		conn.SetDeadline(time.Now().Add(time.Second * 5))
 
 		bytesWrote, errWrite := conn.Write(reqData)
@@ -233,7 +234,7 @@ func Ping(host string, c int, payload []byte) error {
 		if errCmp != nil {
 			return errCmp
 		}
-		// TODO: парсить ip из ip-заголовка
+		// TODO: parse ip source address from ip header
 		fmt.Printf("%d bytes from %s: icmp_seq=%d ttl=%d time=%f ms\n",
 			datalen,
 			host,
