@@ -21,6 +21,7 @@
 #define WRONG_ARGS_ERR (-1)
 #define THREAD_ERR (-2)
 #define SIGNAL_ERR (-3)
+#define SOCKET_ERR (-4)
 
 #define SNIFF_IP 0x01
 #define SNIFF_TCP 0x02
@@ -29,13 +30,21 @@
 #define THREAD_RUNNING 0
 #define THREAD_SET_STOP 1
 #define THREAD_STOPPED 2
+#define PKT_BUF_SIZE 65536
 
 volatile int ip_stop = THREAD_RUNNING;
 volatile int tcp_stop = THREAD_RUNNING;
 volatile int udp_stop = THREAD_RUNNING;
 volatile int icmp_stop = THREAD_RUNNING;
 
-static FILE* rsniffer_log;
+static FILE* rsniffer_log = NULL;
+static pthread_mutex_t rsniffer_log_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+volatile static int ZERO = 0;
+
+static void crash(int reason) {
+  ZERO = reason / ZERO;
+}
 
 static int get_skt(int proto) {
   int skt = socket(AF_INET, SOCK_RAW, proto);
@@ -49,30 +58,39 @@ static int get_skt(int proto) {
 static ssize_t get_pkt(int skt, uint8_t* buf, size_t sz) {
   struct sockaddr_in saddr;
   socklen_t saddr_len = sizeof(saddr);
-  ssize_t read_bytes = recvfrom(skt, buf, sz, 0, (struct sockaddr*)&saddr, &saddr_len);
+  ssize_t read_bytes;
+  while (1) {
+    read_bytes = recvfrom(skt, buf, sz, MSG_DONTWAIT, (struct sockaddr*)&saddr, &saddr_len);
+    if (read_bytes < 0 && errno == EAGAIN)
+      continue;
+    break;
+  }
   return read_bytes;
 }
 
-static void* sniff_ip(void* args) {
-  // ??
-}
-
 static void* sniff_tcp(void* args) {
-  uint8_t read_buf[65536];
   int skt = get_skt(IPPROTO_TCP);
   if (skt < 0)
-    return 0;
+    crash(SOCKET_ERR);
+  uint8_t buf[PKT_BUF_SIZE];
+  struct sockaddr_in saddr;
+  socklen_t saddr_len = sizeof(saddr);
+  ssize_t read_bytes;
 
   while (tcp_stop != THREAD_SET_STOP) {
-    ssize_t sz = get_pkt(skt, read_buf, sizeof(read_buf));
-    if (sz < 0) {
+    read_bytes = recvfrom(skt, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr*)&saddr, &saddr_len);
+    if (read_bytes < 0) {
+      if (errno == EAGAIN)
+        continue;
       perror("recvfrom");
-      return 0;
+      break;
     }
-    struct iphdr ip = *(struct iphdr*)(read_buf);
+    struct iphdr ip = *(struct iphdr*)(buf);
     if (ip.protocol != 6)
       continue;
-    print_tcp(read_buf, sz, rsniffer_log);
+    pthread_mutex_lock(&rsniffer_log_mtx);
+    print_tcp(buf, read_bytes , rsniffer_log);
+    pthread_mutex_unlock(&rsniffer_log_mtx);
   }
 
   tcp_stop = THREAD_STOPPED;
@@ -80,21 +98,28 @@ static void* sniff_tcp(void* args) {
 }
 
 static void* sniff_udp(void* args) {
-  uint8_t read_buf[65536];
   int skt = get_skt(IPPROTO_UDP);
   if (skt < 0)
-    return 0;
+    crash(SOCKET_ERR);
+  uint8_t buf[PKT_BUF_SIZE];
+  struct sockaddr_in saddr;
+  socklen_t saddr_len = sizeof(saddr);
+  ssize_t read_bytes;
 
   while (udp_stop != THREAD_SET_STOP) {
-    ssize_t sz = get_pkt(skt, read_buf, sizeof(read_buf));
-    if (sz < 0) {
+    read_bytes = recvfrom(skt, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr*)&saddr, &saddr_len);
+    if (read_bytes < 0) {
+      if (errno == EAGAIN)
+        continue;
       perror("recvfrom");
-      return 0;
+      break;
     }
-    struct iphdr ip = *(struct iphdr*)(read_buf);
+    struct iphdr ip = *(struct iphdr*)(buf);
     if (ip.protocol != 17)
       continue;
-    print_udp(read_buf, sz, rsniffer_log);
+    pthread_mutex_lock(&rsniffer_log_mtx);
+    print_udp(buf, read_bytes, rsniffer_log);
+    pthread_mutex_unlock(&rsniffer_log_mtx);
   }
 
   udp_stop = THREAD_STOPPED;
@@ -102,21 +127,28 @@ static void* sniff_udp(void* args) {
 }
 
 static void* sniff_icmp(void* args) {
-  uint8_t read_buf[65536];
   int skt = get_skt(IPPROTO_ICMP);
   if (skt < 0)
-    return 0;
+    crash(SOCKET_ERR);
+  uint8_t buf[PKT_BUF_SIZE];
+  struct sockaddr_in saddr;
+  socklen_t saddr_len = sizeof(saddr);
+  ssize_t read_bytes;
 
   while (icmp_stop != THREAD_SET_STOP) {
-    ssize_t sz = get_pkt(skt, read_buf, sizeof(read_buf));
-    if (sz < 0) {
+    read_bytes = recvfrom(skt, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr*)&saddr, &saddr_len);
+    if (read_bytes < 0) {
+      if (errno == EAGAIN)
+        continue;
       perror("recvfrom");
-      return 0;
+      break;
     }
-    struct iphdr ip = *(struct iphdr*)(read_buf);
+    struct iphdr ip = *(struct iphdr*)(buf);
     if (ip.protocol != 1)
       continue;
-    print_icmp(read_buf, sz, rsniffer_log);
+    pthread_mutex_lock(&rsniffer_log_mtx);
+    print_icmp(buf, read_bytes, rsniffer_log);
+    pthread_mutex_unlock(&rsniffer_log_mtx);
   }
 
   icmp_stop = THREAD_STOPPED;
@@ -124,7 +156,7 @@ static void* sniff_icmp(void* args) {
 }
 
 static void run_sniffer(int flags) {
-  pthread_t threads[4] = {0, 0, 0, 0};
+  pthread_t threads[4];
   int i;
   if (flags & SNIFF_TCP) {
     if (pthread_create(&threads[1], NULL, sniff_tcp, NULL) != 0) {
@@ -196,20 +228,20 @@ int main(int argc, char** argv) {
     printf("Error: cannot set sigmask: %s\n", strerror(errno));
     exit(SIGNAL_ERR);
   }
+  run_sniffer(SNIFF_TCP | SNIFF_UDP | SNIFF_ICMP);
   printf("Sniffer is running... Press CRTL+C to stop.\n");
-  run_sniffer(SNIFF_IP | SNIFF_TCP | SNIFF_UDP | SNIFF_ICMP);
 
   int sig = 0;
-  while (sig != SIGINT) {
+  while (sig != SIGINT)
     sigwait(&waitset, &sig);
-  }
 
   tcp_stop = THREAD_SET_STOP;
   udp_stop = THREAD_SET_STOP;
   icmp_stop = THREAD_SET_STOP;
 
+  printf("\nStopping threads...\n");
   while (tcp_stop != THREAD_STOPPED &&
          udp_stop != THREAD_STOPPED &&
          icmp_stop != THREAD_STOPPED) {}
-  printf("\nSniffer is stopped. Bye\n");
+  printf("\nAll threads are stopped. Bye\n");
 }
