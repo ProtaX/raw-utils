@@ -14,6 +14,10 @@
 #include <netinet/udp.h>
 #include <netinet/ip_icmp.h>
 
+/**
+ * Taken from https://www.binarytides.com/packet-sniffer-code-c-linux/
+ * Modified by ProtaX
+ */
 inline void print_data(uint8_t* data, size_t sz, FILE* log) {
   int i, j;
 	for (i = 0; i < sz; i++)	{
@@ -30,7 +34,7 @@ inline void print_data(uint8_t* data, size_t sz, FILE* log) {
 
 		if (i % 16 == 0)
       fprintf(log, "   ");
-		fprintf(log, " %02X", (unsigned int)data[i]);  // ??
+		fprintf(log, " %02X", (unsigned int)data[i]);
 
 		if (i == sz - 1) {
 			for (j = 0; j < 15 - i % 16; j++)
